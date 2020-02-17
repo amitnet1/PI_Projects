@@ -1,5 +1,5 @@
 ﻿'Developed by: Amit Patil
-'Date Created: 30/01/2020   Date Modified: 17/02/2020 (Added additional error handling & disposed datapipe objects on completion & on error)
+'Date Created: 30/01/2020   Date Modified: 17/02/2020 (Added additional error handling & disposed datapipe objects on completion & on exception)
 
 'Program for testing AF Analysis backfilling / reclaulation 
 'Target feamework shall be 4.6.2 Or later for AF (Include OSIsoft.AFSDK version 4.0.0.0 under references)
@@ -36,6 +36,7 @@ Selection:
             GoTo Selection
         Else
             Console.WriteLine("Thank you! Exiting the program...")
+            Threading.Thread.Sleep(2000) 'Delay before exit
         End If
 
     End Sub
@@ -71,27 +72,27 @@ Selection:
             myAFElement = myAFDatabase.Elements(temp_af_element)
             Console.WriteLine() 'Blank line
 
-            'check for analyses against selected element
-            If myAFElement.Analyses Is Nothing Then
+            'Check for analyses against selected element
+            If myAFElement.Analyses Is Nothing Or myAFElement.Analyses.Count = 0 Then
                 Console.WriteLine("No analyses available for the selected element " & myAFElement.Name & ".")
                 GoTo Disconnect_AF
+            Else
+                Console.WriteLine("Available Analyses are as follows:")
+                For i = 0 To myAFElement.Analyses.Count - 1
+                    Dim tempstring As String = "" & vbTab & i + 1 & "." & vbTab & myAFElement.Analyses.Item(i).ToString
+                    Console.WriteLine(tempstring)
+                Next
             End If
 
-            Console.WriteLine("Available Analyses are as follows:")
-            For i = 0 To myAFElement.Analyses.Count - 1
-                Dim tempstring As String = "" & vbTab & i + 1 & "." & vbTab & myAFElement.Analyses.Item(i).ToString
-                Console.WriteLine(tempstring)
-            Next
-
             Console.WriteLine() 'Blank line
-            Console.Write("Select analysis number for recalculation: ")
-            Dim calc_number As Int16 = Convert.ToInt16(Console.ReadLine()) - 1  'offset adjusted
+            Console.Write("Select analysis number for backfilling/recalculation: ")
+            Dim calc_number As Int16 = Convert.ToInt16(Console.ReadLine())
             Dim analysis1 As AFAnalysis
-            analysis1 = myAFElement.Analyses.Item(calc_number)
+            analysis1 = myAFElement.Analyses.Item(calc_number - 1) 'offset adjusted
 
             Console.WriteLine() 'Blank line
             Console.WriteLine("Select option number.")
-            Console.Write("1:Manual backfilling 2.Auto Trigegred backfilling (based on AF data-pipe monitoring OOO event): ")
+            Console.Write("1:Manual backfilling 2.Auto Trigegred backfilling (AF data-pipe monitoring OOO event): ")
             temp_selection = Convert.ToInt16(Console.ReadLine())
 
             AN_Service = myAFServer.AnalysisService
@@ -125,7 +126,7 @@ Selection:
                     'instance = analysis1.AnalysisRule.GetConfiguration 'Not required
 
                     pipe_attributelist = analysis1.AnalysisRule.GetInputs
-                    _afDataPipe.AddSignups(pipe_attributelist)
+                    _afDataPipe.AddSignups(pipe_attributelist) 'Add datapipe signups for input attributes of the analysis
                     iobserver2 = New AFConsoleDataReceiver
                     _afDataPipe.Subscribe(iobserver2)   'Subscribe and pass iobserver reference
                     Console.WriteLine() 'Blank line
@@ -155,8 +156,8 @@ Selection:
 
                     'Dispose datapipe related objects on completion of iobserver loop to release resource overheads
                     If (pipe_attributelist IsNot Nothing Or _afDataPipe IsNot Nothing) And (pipe_attributelist.Count > 0) Then
-                        _afDataPipe.RemoveSignups(pipe_attributelist) ' Remove signups on complete
-                        _afDataPipe.Dispose()   'Dispose data pipe on complete
+                        _afDataPipe.RemoveSignups(pipe_attributelist) ' Datapipe Remove signups on completing iobserver loop
+                        _afDataPipe.Dispose()   'Dispose Data pipe on complete
                         Console.WriteLine("Data event (OOO) Observer time completed. Time: " & datapipetimer & " seconds.")
                         Console.WriteLine("AF DataPipe related objects disposed.")
                     End If
@@ -180,6 +181,8 @@ Disconnect_AF:
                 Console.WriteLine("Invalid AF Element Path: " & temp_af_element & ".")
                 Console.WriteLine("Kindly specify valid AF Element path (parent\child element ref. format).")
                 myAFServer.Disconnect() 'Disconnect on exception
+            ElseIf AN_Service Is Nothing Or analyses Is Nothing Then
+                Console.WriteLine("Analysis service or analyses are not available.")
             ElseIf timeRange.StartTime.LocalTime.Year = "1970" Or timeRange.EndTime.LocalTime.Year = "1970" Then
                 Console.WriteLine("Error while parsing Start Time or End Time due to invalid entry.")
                 Console.WriteLine("Please enter Start Time or End Time in Windows clock format or PI format.")
@@ -214,10 +217,11 @@ Public Class AFConsoleDataReceiver
     Implements IObserver(Of AFDataPipeEvent)
 
     Public Sub OnNext(value As AFDataPipeEvent) Implements IObserver(Of AFDataPipeEvent).OnNext
+        'Capture datapipe event and print results
         Console.WriteLine("AFDataPipe event - Attribute Name: {0}, Action Type: {1}, Value {2}, TimeStamp: {3}", value.Value.Attribute.Name, value.Action.ToString(), value.Value.Value, value.Value.Timestamp.ToString())
+        'Capture action and timestamp values for analysis backfilling (public vars)
         Pipe_Val_Action = value.Action.ToString()   'Public var
         Pipe_Val_Timestamp = value.Value.Timestamp.ToString 'Public var
-        'Console.WriteLine("Action:" & Pipe_Val_Action & ", Timestamp: " & Pipe_Val_Timestamp)
     End Sub
 
     Public Sub OnError([error] As Exception) Implements IObserver(Of AFDataPipeEvent).OnError
