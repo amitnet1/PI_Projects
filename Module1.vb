@@ -1,4 +1,6 @@
-﻿'Date: 30/01/2020   Developed by: Amit Patil
+﻿'Developed by: Amit Patil
+'Date Created: 30/01/2020   Date Modified: 17/02/2020 (Added additional error handling & disposed datapipe objects on completion & on error)
+
 'Program for testing AF Analysis backfilling / reclaulation 
 'Target feamework shall be 4.6.2 Or later for AF (Include OSIsoft.AFSDK version 4.0.0.0 under references)
 'Imports OSIsoft.AF.PI   'Namespace required for AF SDK PI Data Archive Server
@@ -21,14 +23,19 @@ Module Module1
     Sub Main()
         Console.Title = "PI Analysis reclaulation test utility (AF SDK) - AP"
 Selection:
+
+        Console.BackgroundColor = ConsoleColor.Black
+        Console.ForegroundColor = ConsoleColor.White
+        Console.WriteLine() 'Blank line
+
         Call Analysis_Recalc()
 
-        Console.WriteLine("Do you want to continue? Y/N: ")
+        Console.Write("Do you want to continue? Y/N: ")
         Dim YNselection As String = Console.ReadLine()
         If YNselection = "Y" Or YNselection = "y" Then
             GoTo Selection
         Else
-            Console.WriteLine("Exiting the program...")
+            Console.WriteLine("Thank you! Exiting the program...")
         End If
 
     End Sub
@@ -42,11 +49,10 @@ Selection:
         Dim AN_Service As AFAnalysisService
         Dim analyses As IEnumerable(Of AFAnalysis)
         Dim returnValue As Object
+        Dim pipe_attributelist As AFAttributeList
 
         Try
-            Console.BackgroundColor = ConsoleColor.Black
-            Console.ForegroundColor = ConsoleColor.White
-            Console.WriteLine() 'Blank line
+
             g_AFServers = New PISystems 'Instantiate a new AF servers object
             Console.Write("Enter AF Server name to be connected: ")
             temp_afsrv = Console.ReadLine()
@@ -64,11 +70,19 @@ Selection:
             temp_af_element = Console.ReadLine()
             myAFElement = myAFDatabase.Elements(temp_af_element)
             Console.WriteLine() 'Blank line
+
+            'check for analyses against selected element
+            If myAFElement.Analyses Is Nothing Then
+                Console.WriteLine("No analyses available for the selected element " & myAFElement.Name & ".")
+                GoTo Disconnect_AF
+            End If
+
             Console.WriteLine("Available Analyses are as follows:")
             For i = 0 To myAFElement.Analyses.Count - 1
                 Dim tempstring As String = "" & vbTab & i + 1 & "." & vbTab & myAFElement.Analyses.Item(i).ToString
                 Console.WriteLine(tempstring)
             Next
+
             Console.WriteLine() 'Blank line
             Console.Write("Select analysis number for recalculation: ")
             Dim calc_number As Int16 = Convert.ToInt16(Console.ReadLine()) - 1  'offset adjusted
@@ -83,10 +97,12 @@ Selection:
             AN_Service = myAFServer.AnalysisService
             analyses = {analysis1}  'Initilize analysis collection
 
+
             Select Case temp_selection
                 Case 1
                     'Manual backfilling
                     Dim start_time, end_time As String
+                    Console.WriteLine("Option 1 - Manual backfilling has been selected.")
                     Console.Write("Select start time for recalc:")
                     start_time = Console.ReadLine()
                     Console.Write("Select end time for recalc:")
@@ -94,21 +110,28 @@ Selection:
                     timeRange = AFTimeRange.Parse(start_time, end_time, myAFServer.ServerTime, Nothing)
                     mode = AFAnalysisService.CalculationMode.FillDataGaps 'Backfill manually
                     returnValue = AN_Service.QueueCalculation(analyses, timeRange, mode)
-                    Console.WriteLine("Manual recalculation scheduled for the period " & "Start time-" &
-                                      timeRange.StartTime.ToString & "End time-" & timeRange.EndTime.ToString)
+                    Console.WriteLine("Manual recalculation scheduled for " & "Start time-" &
+                                      timeRange.StartTime.ToString & "End time-" & timeRange.EndTime.ToString &
+                                      "on " & AN_Service.Host)
+
                 Case 2
                     'AF Datapipe based backfilling of out of order event
+                    Console.WriteLine("Option 2 - Auto Trigegred backfilling has been selected (OOO processing based on data pipe).")
+                    Console.Write("Enter the time in seconds for which data pipe events shall be monitored: ")
+                    Dim datapipetimer As Int16 = Convert.ToInt16(Console.ReadLine())
+
                     _afDataPipe = New AFDataPipe
                     'Dim instance As AFAnalysisRuleConfiguration 'Not required
                     'instance = analysis1.AnalysisRule.GetConfiguration 'Not required
 
-                    Dim pipe_attributelist As AFAttributeList = analysis1.AnalysisRule.GetInputs
+                    pipe_attributelist = analysis1.AnalysisRule.GetInputs
                     _afDataPipe.AddSignups(pipe_attributelist)
                     iobserver2 = New AFConsoleDataReceiver
                     _afDataPipe.Subscribe(iobserver2)   'Subscribe and pass iobserver reference
+                    Console.WriteLine() 'Blank line
                     'Use Get Observer events 
                     Dim i As Int16
-                    While i <= 300
+                    While i <= (datapipetimer - 1)
                         'Console.WriteLine(i)
                         _afDataPipe.GetObserverEvents() 'Get AFdatapipe events then implement further logic
                         'Capture OOO event and perform recalculation for single new OOO event automatically (inserted or modified)
@@ -116,27 +139,69 @@ Selection:
                             timeRange = AFTimeRange.Parse(Pipe_Val_Timestamp, Pipe_Val_Timestamp, myAFServer.ServerTime, Nothing)
                             mode = AFAnalysisService.CalculationMode.FillDataGaps   'Backfill automatically for single OOO timestamp
                             returnValue = AN_Service.QueueCalculation(analyses, timeRange, mode)
-                            Console.ForegroundColor = ConsoleColor.Red
-                            Console.WriteLine("Automatic backfilling scheduled for time: " & Pipe_Val_Timestamp)
-                            Console.ForegroundColor = ConsoleColor.White
-                            Pipe_Val_Action = Nothing 'clear
-                            Pipe_Val_Timestamp = Nothing 'clear
+                            Console.ForegroundColor = ConsoleColor.Red  'Red font
+                            Console.WriteLine("OOO event detected for input attribute.")
+                            Console.WriteLine("Automatic backfilling triggered for time: " & Pipe_Val_Timestamp)
+                        ElseIf Pipe_Val_Action = "Add" Or Pipe_Val_Action = "Delete" Then
+                            Console.ForegroundColor = ConsoleColor.Red  'Red font
+                            Console.WriteLine("This is not an OOO update event. No automatic backfilling action required.")
                         End If
-                        Threading.Thread.Sleep(1000)    'Delay in ms , loop will exit after iMax value*delay seconds
+                        Console.ForegroundColor = ConsoleColor.White    'Reset font color to original
+                        Pipe_Val_Action = Nothing 'clear
+                        Pipe_Val_Timestamp = Nothing 'clear
+                        Threading.Thread.Sleep(1000)    'Delay in ms , loop will exit after no. of seconds captured by datapipetimer
                         i = i + 1
                     End While
 
+                    'Dispose datapipe related objects on completion of iobserver loop to release resource overheads
+                    If (pipe_attributelist IsNot Nothing Or _afDataPipe IsNot Nothing) And (pipe_attributelist.Count > 0) Then
+                        _afDataPipe.RemoveSignups(pipe_attributelist) ' Remove signups on complete
+                        _afDataPipe.Dispose()   'Dispose data pipe on complete
+                        Console.WriteLine("Data event (OOO) Observer time completed. Time: " & datapipetimer & " seconds.")
+                        Console.WriteLine("AF DataPipe related objects disposed.")
+                    End If
                 Case Else
-                    'Nothing
+                    Console.WriteLine("Invalid option selected for backfilling! Exiting the program..")
             End Select
-
-            myAFServer.Disconnect()
+Disconnect_AF:
+            myAFServer.Disconnect() 'Disconnect after completion
             Console.WriteLine("**********************************************")
 
         Catch ex As Exception
             Console.ForegroundColor = ConsoleColor.Red
-            Console.WriteLine("Exception: " & ex.Message)
+            If myAFServer Is Nothing Then
+                Console.WriteLine("Invalid AF Server Name: " & temp_afsrv & ".")
+                Console.WriteLine("Kindly enter valid AF Server name.")
+            ElseIf myAFDatabase Is Nothing Then
+                Console.WriteLine("Invalid AF DB Name: " & temp_af_db & ".")
+                Console.WriteLine("Kindly enter valid AF DB name.")
+                myAFServer.Disconnect() 'Disconnect on exception
+            ElseIf myAFElement Is Nothing Then
+                Console.WriteLine("Invalid AF Element Path: " & temp_af_element & ".")
+                Console.WriteLine("Kindly specify valid AF Element path (parent\child element ref. format).")
+                myAFServer.Disconnect() 'Disconnect on exception
+            ElseIf timeRange.StartTime.LocalTime.Year = "1970" Or timeRange.EndTime.LocalTime.Year = "1970" Then
+                Console.WriteLine("Error while parsing Start Time or End Time due to invalid entry.")
+                Console.WriteLine("Please enter Start Time or End Time in Windows clock format or PI format.")
+            Else
+                Console.WriteLine("Exception: " & ex.Message)
+                Console.WriteLine("Kindly contact AF system admin if the issue persists.")
+                myAFServer.Disconnect()
+            End If
+
+            'Dispose datapipe related objects on exception
+            If (pipe_attributelist IsNot Nothing And _afDataPipe IsNot Nothing And pipe_attributelist IsNot Nothing) Then
+                _afDataPipe.RemoveSignups(pipe_attributelist) ' Remove signups on error
+                _afDataPipe.Dispose()   'Dispose data pipe on error
+                myAFServer.Disconnect() 'Disconnect on exception
+                g_AFServers.DisconnectAll()
+            End If
+
             Console.WriteLine("**********************************************")
+            'Reset theme on completion of exception capturing
+            Console.BackgroundColor = ConsoleColor.Black
+            Console.ForegroundColor = ConsoleColor.White
+            Console.WriteLine() 'Blank line
         End Try
     End Sub
 
@@ -161,7 +226,7 @@ Public Class AFConsoleDataReceiver
     End Sub
 
     Public Sub OnCompleted() Implements IObserver(Of AFDataPipeEvent).OnCompleted
-        Console.WriteLine("Provider has terminated sending data.")
+        Console.WriteLine("Provider has completed/terminated sending data.")
     End Sub
 
 End Class
